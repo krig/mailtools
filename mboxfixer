@@ -25,6 +25,7 @@ def cleanup_tempfiles():
         os.remove(f)
 
 from_re = re.compile(r'^(>\s?)*From\s')
+space_re = re.compile(r'\s+', re.MULTILINE)
 
 
 def suspect(line):
@@ -56,6 +57,11 @@ def preprocess_mbox(mbname):
                     sink.write('>')
                 sink.write(line)
     return output_filename
+
+
+def strip_messageid(mid):
+    "Removes internal spaces and newlines from message-id"
+    return space_re.sub(' ', mid.strip())
 
 
 def verify_mbox(name, mbfile):
@@ -101,7 +107,7 @@ def process_mbox(name, source, dest):
             for message in folder:
                 mid = message.get('message-id')
                 if mid:
-                    existing.add(mid)
+                    existing.add(strip_messageid(mid))
                 else:
                     existing.add(digest(message))
             complete_op("OK")
@@ -113,7 +119,7 @@ def process_mbox(name, source, dest):
         for message in mbox:
             mid = message.get('message-id')
             if mid:
-                if mid in existing:
+                if strip_messageid(mid) in existing:
                     continue
                 #else:
                 #    print message.as_string()
