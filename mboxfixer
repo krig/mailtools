@@ -161,6 +161,9 @@ def run():
 
     if args.output and not os.path.isdir(args.output):
         os.makedirs(args.output)
+        if not args.writembox:
+            for subdir in ('cur', 'tmp', 'new'):
+                os.mkdir(os.path.join(args.output, subdir))
 
     dest = None
     if args.output and not args.writembox:
