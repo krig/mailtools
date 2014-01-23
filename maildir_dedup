@@ -47,13 +47,16 @@ def dedup_maildir(maildir, force):
 
 
 def dupweight(a, b):
-    ascore = a.find('INBOX')
-    bscore = b.find('INBOX')
-    if ascore < 0:
-        ascore = 10000
-    if bscore < 0:
-        bscore = 10000
-    return ascore < bscore
+    def score(x):
+        v = x.find('INBOX')
+        if v < 0:
+            v = x.find('new') * 10
+            if v < 0:
+                v = x.find('cur') * 100
+                if v < 0:
+                    v = 10000
+        return v
+    return score(a) < score(b)
 
 
 def remove_duplicates(files, force):
