@@ -1,0 +1,88 @@
+#!/usr/bin/env python
+#
+# Dedup mails in Maildir
+import sys
+import os
+import argparse
+import mailbox
+import hashlib
+
+
+def dedup_recurser(maildir, force, duplicates):
+    # leaf
+    e = maildir[-4:]
+    if e in ('/cur', '/new', '/tmp'):
+        for elem in os.listdir(maildir):
+            fname = os.path.join(maildir, elem)
+            if os.path.isfile(fname):
+                digest = hashlib.sha1(open(fname).read()).hexdigest()
+                m = duplicates.get(digest)
+                if not m:
+                    m = []
+                    duplicates[digest] = m
+                m.append(fname)
+    else:
+        for elem in os.listdir(maildir):
+            name = os.path.join(maildir, elem)
+            if os.path.isdir(name):
+                dedup_recurser(name, force, duplicates)
+
+
+def dedup_maildir(maildir, force):
+    """
+    Finds duplicates of mails between mail folders
+    and removes the duplicates. Prefers to keep mails
+    in folders other than INBOX.
+    """
+    duplicates = {}
+    print "Processing..."
+    dedup_recurser(maildir, force, duplicates)
+
+    nremoved = 0
+    for chsum, lst in duplicates.iteritems():
+        if len(lst) > 1:
+            nremoved += remove_duplicates(lst, force)
+    if nremoved:
+        print "Removed %d duplicates." % (nremoved)
+
+
+def dupweight(a, b):
+    ascore = a.find('INBOX')
+    bscore = b.find('INBOX')
+    if ascore < 0:
+        ascore = 10000
+    if bscore < 0:
+        bscore = 10000
+    return ascore < bscore
+
+
+def remove_duplicates(files, force):
+    """
+    Remove duplicates. Prefers to remove files in INBOX.
+    """
+    files = sorted(files, dupweight)
+    removing = files[:-1]
+    keeping = files[-1]
+    print "Removing:", ', '.join(removing)
+    print "Keeping:", keeping
+    if force:
+        for f in removing:
+            os.remove(f)
+    return len(removing)
+
+
+def run():
+    parser = argparse.ArgumentParser(
+        description='maildir deduplication')
+    parser.add_argument('-f', '--force', dest='force', action='store_true',
+                        help='Remove duplicates if found')
+    parser.add_argument('maildir', help='Root Maildir directory')
+
+    args = parser.parse_args()
+    ok = dedup_maildir(args.maildir, args.force)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    rc = run()
+    sys.exit(rc)
