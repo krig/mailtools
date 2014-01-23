@@ -1,0 +1,185 @@
+#!/usr/bin/env python
+#
+# Try to rescue data contained in the mbox files...
+import os
+import sys
+import re
+import atexit
+import shutil
+import argparse
+import mailbox
+import tempfile
+import hashlib
+
+_tempfiles = []
+
+
+def mktemp():
+    _, name = tempfile.mkstemp(prefix='mboxfixer')
+    _tempfiles.append(name)
+    return name
+
+
+def cleanup_tempfiles():
+    for f in _tempfiles:
+        os.remove(f)
+
+from_re = re.compile(r'^(>\s?)*From\s')
+
+
+def suspect(line):
+    return not line.startswith('From nobody') and from_re.match(line)
+
+
+def begin_op(msg):
+    sys.stdout.write("%s..." % (msg))
+    sys.stdout.flush()
+
+
+def complete_op(result):
+    sys.stdout.write("%s\n" % (result))
+
+
+def preprocess_mbox(mbname):
+    """
+    Attempt to repair the given mbox.
+    Tries to fix the From line and discover
+    false From lines.
+    Returns a new mbox file.
+    """
+    print "Repairing %s..." % (mbname)
+    output_filename = mktemp()
+    with open(output_filename, 'wb') as sink:
+        with open(mbname, 'rb') as source:
+            for line in source:
+                if suspect(line):
+                    sink.write('>')
+                sink.write(line)
+    return output_filename
+
+
+def verify_mbox(name, mbfile):
+    """
+    Tries to make sure that the messages are valid
+    in this mbox
+    """
+    ok = True
+    begin_op(name)
+    mbox = mailbox.mbox(mbfile)
+    mbox.lock()
+    for i, message in enumerate(mbox):
+        mid = message.get('message-id')
+        if not mid:
+            complete_op('FAIL')
+            ok = False
+            print "%03d: %s" % (i, message.keys())
+    if ok:
+        complete_op('OK')
+    mbox.unlock()
+    mbox.close()
+    return ok
+
+
+def digest(msg):
+    ret = "sha1:" + hashlib.sha1(msg.as_string()).hexdigest()
+    return ret
+
+
+def process_mbox(name, source, dest):
+    """
+    Copy messages from the given mbox
+    into the Maildir.
+    """
+    existing = set()
+    mbox = mailbox.mbox(source)
+    dest.lock()
+    mbox.lock()
+    try:
+        try:
+            folder = dest.get_folder(name)
+            begin_op("Checking %s" % (name))
+            for message in folder:
+                mid = message.get('message-id')
+                if mid:
+                    existing.add(mid)
+                else:
+                    existing.add(digest(message))
+            complete_op("OK")
+        except mailbox.NoSuchMailboxError:
+            begin_op("Creating %s/" % (name))
+            folder = dest.add_folder(name)
+            complete_op("OK")
+        n = 0
+        for message in mbox:
+            mid = message.get('message-id')
+            if mid:
+                if mid in existing:
+                    continue
+                #else:
+                #    print message.as_string()
+            else:
+                if digest(message) in existing:
+                    continue
+            folder.add(message)
+            n += 1
+        if n != 1:
+            print "%s new messages." % (n)
+        else:
+            print "1 new message."
+    finally:
+        mbox.unlock()
+        dest.unlock()
+    return True
+
+
+def run():
+    atexit.register(cleanup_tempfiles)
+    parser = argparse.ArgumentParser(
+        description='mbox fix and conversion tool')
+    parser.add_argument('-o', '--output', dest='output',
+                        help='directory to write output into')
+    parser.add_argument('--verify', dest='verify', action='store_true',
+                        help='Verify integrity of mbox before processing')
+    parser.add_argument('--fix-if-broken', dest='fix', action='store_true',
+                        help='If verification fails, try to fix it (implies --verify)')
+    parser.add_argument('--write-mbox', dest='writembox', action='store_true',
+                        help='write to output folder as mbox, not Maildir')
+    parser.add_argument('mbox', nargs='+',
+                        help='mailbox to process as input')
+    args = parser.parse_args()
+
+    if not args.output and not args.verify:
+        parser.print_usage(file=sys.stderr)
+        print >>sys.stderr, "Error: No output directory specified"
+        sys.exit(1)
+
+    if args.output and not os.path.isdir(args.output):
+        os.makedirs(args.output)
+
+    dest = None
+    if args.output and not args.writembox:
+        dest = mailbox.Maildir(args.output)
+
+    ret = True
+    for mbname in args.mbox:
+        foldername = os.path.splitext(os.path.basename(mbname))[0]
+        if args.fix:
+            if not verify_mbox(foldername, mbname):
+                new_mbox = preprocess_mbox(mbname)
+            else:
+                new_mbox = mbname
+        else:
+            new_mbox = mbname
+        if new_mbox:
+            if args.verify and not args.fix:
+                ret = ret and verify_mbox(foldername, new_mbox)
+            if args.output and args.writembox:
+                shutil.copyfile(new_mbox, os.path.join(args.output, foldername + '.mbox'))
+                ret = True
+            elif args.output:
+                ret = ret and process_mbox(foldername, new_mbox, dest)
+    if not ret:
+        sys.exit(1)
+
+if __name__ == "__main__":
+    run()
