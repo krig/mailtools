@@ -1,0 +1,233 @@
+#!/usr/bin/env python
+#
+# very primitive web view of an mbox file
+# tries to cope with mails that have broken encoding
+# does not handle html mail
+import sys
+import mailbox
+from email.header import decode_header
+import re
+import web
+import cgi
+
+PAGE = '''<!DOCTYPE html>
+<html>
+%(head)s
+<body>
+%(body)s
+</body></html>
+'''
+
+STYLE = '''<style>
+body {
+  color: #282c35;
+  background-color: #fbfbfb;
+  font-family: "Open Sans", Helvetica, Arial, sans-serif;
+  text-align: left;
+}
+
+pre, code {
+  font-family: "Ubuntu Mono", "Consolas", "Inconsolata", "DejaVu Sans Mono", monospace;
+}
+
+pre {
+  margin-bottom: 1em;
+  line-height: 1.0em;
+  padding: 8px;
+  width: 80%;
+  margin-left: 10%;
+}
+
+#container {
+  width: 960px;
+  margin: auto;
+}
+
+pre {
+ white-space: pre-wrap;       /* css-3 */
+ white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
+ white-space: -pre-wrap;      /* Opera 4-6 */
+ white-space: -o-pre-wrap;    /* Opera 7 */
+ word-wrap: break-word;       /* Internet Explorer 5.5+ */
+}
+
+#top {
+  background-color: #efefef;
+  color: #999999;
+}
+
+#top a {
+  color: #999999;
+  font-weight: bold;
+}
+
+#headers {
+background-color: #fafafa;
+ padding: 8px;
+ font-size: small;
+}
+
+.mailhead {
+  color: #444444;
+}
+
+.mailbody {
+  background-color: #ffffff;
+}
+
+.mailsubj {
+  display: block;
+  width: 640px;
+}
+
+.maildate {
+  display: inline-block;
+  font-size: small;
+}
+
+.mailfrom {
+  display: inline-block;
+  width: 200px;
+  font-size: small;
+  font-weight: bold;
+}
+
+.odd {
+  background-color: #f0f0f0;
+}
+
+</style>
+'''
+
+HEAD = '''<head>
+<title>%(title)s</title>
+<meta charset="utf-8">
+%(style)s
+</head>
+'''
+
+
+def usage():
+    print "%s PORT MBOX" % (sys.argv[0])
+    sys.exit(1)
+
+
+def make_html(title, body):
+    title = cgi.escape(title)
+    style = STYLE
+    head = HEAD % locals()
+    return PAGE % locals()
+
+
+def find_body(msg):
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.is_multipart():
+                for subpart in part.walk():
+                    if subpart.get_content_type() == 'text/plain':
+                        return subpart.get_payload(decode=True), subpart.get_charset()
+            elif part.get_content_type() == 'text/plain':
+                return part.get_payload(decode=True), part.get_charset()
+    elif msg.get_content_type() == 'text/plain':
+        return msg.get_payload(decode=True), msg.get_charset()
+    return '', 'latin-1'
+
+
+def find_header(msg, header):
+    if header not in msg:
+        return None
+    txt = msg[header]
+    txt = re.sub(r"(=\?.*\?=)(?!$)", r"\1 ", txt)
+    h = decode_header(txt)
+    #print cs, repr(h)
+    ret = ''
+    for s, enc in h:
+        ret += s
+    return ret
+
+
+def decode(msg, data, cs2=None):
+    tries = [x for x in [cs2, msg.get_content_charset(), 'latin-1'] if x]
+    for cs in tries:
+        try:
+            return data.decode(cs).encode('utf-8')
+        except UnicodeDecodeError:
+            pass
+    return data
+
+
+def display(msg):
+    for header in ('from', 'to', 'date', 'subject'):
+        h = find_header(msg, header)
+        if not h:
+            continue
+        h = decode(msg, h)
+        print "%s: %s" % (header.capitalize(), h)
+    print decode(msg, *find_body(msg))
+    print ''
+
+
+class hello:
+    mb = None
+
+    def GET(self, name):
+        if not name:
+            return self.listing(name)
+        return self.show_mail(name)
+
+    def listing(self, title):
+        title = "mbox: %s" % (sys.argv[2])
+        body = '<div id="container"><ul>'
+        i = 0
+        for key, msg in self.mb.iteritems():
+            i += 1
+            from_header = find_header(msg, 'from') or 'unknown'
+            date_header = find_header(msg, 'date') or 'never'
+            subj_header = find_header(msg, 'subject') or '(subject)'
+            body += """<li%s>
+            <span class="mailsubj"><a href="/%s">%s</a></span>
+            <span class="maildate">%s:</span>
+            <span class="mailfrom">%s</span>
+            </li>""" % (
+                ' class="odd"' if i % 2 else '',
+                key,
+                cgi.escape(decode(msg, subj_header)),
+                cgi.escape(decode(msg, date_header)),
+                cgi.escape(decode(msg, from_header)))
+        body += '</ul></div>'
+        return make_html(title, body)
+
+    def show_mail(self, mailname):
+        try:
+            mailname = int(mailname)
+        except ValueError:
+            pass
+        msg = self.mb.get(mailname)
+        if not msg:
+            return "<b>not found: %s</b>" % (mailname)
+        body = '<div id="container"><div id="top"><a href="/">back</a></div><div id="headers">'
+        for header in ('from', 'to', 'date', 'subject'):
+            h = find_header(msg, header)
+            if not h:
+                continue
+            h = decode(msg, h)
+            if h:
+                body += '<div class="mailhead"><b>%s</b>: %s</div>' % (header.capitalize(), cgi.escape(h))
+        body += '</div><pre class="mailbody">%s</pre>' % (decode(msg, *find_body(msg)))
+        body += "</div>"
+        return make_html("mail: %s" % (mailname), body)
+
+
+def run(argv):
+    if len(argv) < 3:
+        usage()
+    hello.mb = mailbox.mbox(argv[2])
+    urls = ('/(.*)', 'hello')
+    app = web.application(urls, globals())
+    app.run()
+
+
+if __name__ == "__main__":
+    run(sys.argv)
+
+# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
