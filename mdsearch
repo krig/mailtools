@@ -1,0 +1,74 @@
+#!/usr/bin/env python
+"""mdsearch
+
+Usage:
+  mdsearch [--dir=MAILDIR...] PATTERN
+  mdsearch (-h | --help)
+  mdsearch --version
+
+Options:
+  -h --help                 Show this screen.
+  --version                 Show version.
+  -d MAILDIR --dir=MAILDIR  Maildir to search in
+
+"""
+from docopt import docopt
+import mailbox
+import re
+from email.header import decode_header
+
+
+def red(txt):
+    return '\033[1;31m%s\033[1;m' % (txt)
+def magenta(txt):
+    return '\033[1;35m%s\033[1;m' % (txt)
+def cyan(txt):
+    return '\033[1;36m%s\033[1;m' % (txt)
+def greenbg(txt):
+    return '\033[1;42m%s\033[1;m' % (txt)
+
+
+def find_body(msg):
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.is_multipart():
+                for subpart in part.walk():
+                    if subpart.get_content_type() == 'text/plain':
+                        return subpart.get_payload(decode=True), subpart.get_charset()
+            elif part.get_content_type() == 'text/plain':
+                return part.get_payload(decode=True), part.get_charset()
+    elif msg.get_content_type() == 'text/plain':
+        return msg.get_payload(decode=True), msg.get_charset()
+    return '', 'latin-1'
+
+
+def find_header(msg, header):
+    if header not in msg:
+        return None
+    txt = msg[header]
+    txt = re.sub(r"(=\?.*\?=)(?!$)", r"\1 ", txt)
+    h = decode_header(txt)
+    #print cs, repr(h)
+    ret = ''
+    for s, enc in h:
+        ret += s
+    return ret
+
+
+def seek(md, pattern):
+    for msg in md:
+        s = find_header(msg, 'subject') or ''
+        b, enc = find_body(msg)
+        if pattern.search(s + (b or '')):
+            print cyan(s)
+            print cyan('-' * len(s))
+            print pattern.sub(greenbg('\g<0>'), b)
+    for subfolder in md.list_folders():
+        seek(md.get_folder(subfolder), pattern)
+
+
+if __name__ == '__main__':
+    arguments = docopt(__doc__, version='mdsearch 0.1')
+    for d in arguments['--dir']:
+        seek(mailbox.Maildir(d, factory=None, create=False),
+             re.compile(arguments['PATTERN'], re.I + re.M))
