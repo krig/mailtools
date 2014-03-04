@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 #
 # Dedup mails in Maildir
+#
+# Not very good, use https://github.com/kdeldycke/maildir-deduplicate instead.
 import sys
 import os
 import argparse
